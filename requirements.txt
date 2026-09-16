@@ -1,5 +1,7 @@
 streamlit
 pandas
-plotly
+numpy
 scipy
+plotly
 matplotlib
+jinja2
