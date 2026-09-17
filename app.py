@@ -164,6 +164,36 @@ with tab_summary:
         </div>
         """, unsafe_allow_html=True)
 
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("### Share of Total Approvals")
+        vol = fdf["technician"].value_counts().reset_index()
+        vol.columns = ["technician", "count"]
+        fig_donut = px.pie(
+            vol, names="technician", values="count", hole=0.55,
+            color="technician", color_discrete_map=color_map
+        )
+        fig_donut.update_traces(textinfo="label+percent", textposition="outside")
+        fig_donut.update_layout(showlegend=False, annotations=[dict(
+            text=f"{len(fdf):,}<br>approvals", x=0.5, y=0.5, font_size=16, showarrow=False
+        )])
+        st.plotly_chart(fig_donut, use_container_width=True)
+    with col2:
+        st.markdown(f"### Fast (&lt;{fast_threshold}s) vs. Normal Approvals")
+        fast_split = fdf["duration_sec"].apply(lambda x: f"Under {fast_threshold}s" if x < fast_threshold else f"{fast_threshold}s or more")
+        split_counts = fast_split.value_counts().reset_index()
+        split_counts.columns = ["category", "count"]
+        fig_donut2 = px.pie(
+            split_counts, names="category", values="count", hole=0.55,
+            color="category", color_discrete_map={f"Under {fast_threshold}s": "#E45756", f"{fast_threshold}s or more": "#c9c9c9"}
+        )
+        fig_donut2.update_traces(textinfo="label+percent", textposition="outside")
+        pct = (fdf["duration_sec"] < fast_threshold).mean() * 100
+        fig_donut2.update_layout(showlegend=False, annotations=[dict(
+            text=f"{pct:.0f}%<br>fast", x=0.5, y=0.5, font_size=16, showarrow=False
+        )])
+        st.plotly_chart(fig_donut2, use_container_width=True)
+
     st.markdown("### Duration Overview")
     fig_overview = px.box(
         fdf, x="technician", y="duration_sec", color="technician",
@@ -172,6 +202,31 @@ with tab_summary:
     )
     fig_overview.update_layout(showlegend=False)
     st.plotly_chart(fig_overview, use_container_width=True)
+
+    st.markdown("### Technician Comparison Radar")
+    st.caption("Each metric is normalized 0-100 (higher = more of that behavior) so technicians with very different scales can be compared on one chart.")
+    radar_rows = []
+    for tech in selected_techs:
+        tdata = fdf[fdf["technician"] == tech]
+        radar_rows.append({
+            "technician": tech,
+            "Fast-approval %": (tdata["duration_sec"] < fast_threshold).mean() * 100,
+            "Same-second %": (tdata["duration_sec"] == 0).mean() * 100,
+            "Median speed (inv)": 100 - min(tdata["duration_sec"].median(), 100),
+            "Volume (rel.)": len(tdata) / fdf.groupby("technician").size().max() * 100,
+        })
+    radar_df = pd.DataFrame(radar_rows)
+    categories = ["Fast-approval %", "Same-second %", "Median speed (inv)", "Volume (rel.)"]
+    fig_radar = go.Figure()
+    for _, row in radar_df.iterrows():
+        fig_radar.add_trace(go.Scatterpolar(
+            r=[row[c] for c in categories] + [row[categories[0]]],
+            theta=categories + [categories[0]],
+            fill="toself", name=row["technician"],
+            line_color=color_map.get(row["technician"], "#888")
+        ))
+    fig_radar.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 100])), showlegend=True)
+    st.plotly_chart(fig_radar, use_container_width=True)
 
 # ===========================================================
 # TAB 2: SPEED ANALYSIS
@@ -211,6 +266,16 @@ with tab_speed:
         fig_hourly = px.line(hourly, x="hour", y="count", color="technician",
                               color_discrete_map=color_map, markers=True)
         st.plotly_chart(fig_hourly, use_container_width=True)
+
+    st.subheader("Activity Heatmap: Hour × Weekday")
+    weekday_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    heat_data = fdf.groupby(["weekday", "hour"]).size().reset_index(name="count")
+    heat_pivot = heat_data.pivot(index="weekday", columns="hour", values="count").reindex(weekday_order).fillna(0)
+    fig_heat = px.imshow(
+        heat_pivot, aspect="auto", color_continuous_scale="YlOrRd",
+        labels=dict(x="Hour of Day", y="Weekday", color="Approvals")
+    )
+    st.plotly_chart(fig_heat, use_container_width=True)
 
     if compare_mode and len(selected_techs) >= 2:
         st.subheader("Side-by-Side Technician Comparison")
@@ -264,6 +329,17 @@ with tab_batch:
             labels={"avg_review_time": "Avg review time in block (sec)"}
         )
         st.plotly_chart(fig_bs, use_container_width=True)
+
+    st.subheader("Block Composition Treemap")
+    st.caption("Each rectangle is one review block, sized by number of cases. Bigger blocks = larger rectangles. Grouped by technician.")
+    treemap_df = block_view.copy()
+    treemap_df["block_label"] = "Block " + treemap_df["block_id"].astype(str)
+    fig_tree = px.treemap(
+        treemap_df, path=["technician", "block_label"], values="cases_in_block",
+        color="avg_review_time", color_continuous_scale="RdYlGn_r",
+        labels={"avg_review_time": "Avg review time (sec)"}
+    )
+    st.plotly_chart(fig_tree, use_container_width=True)
 
     st.subheader("Block-Level KPI Summary")
     kpis = block_view.groupby("technician").agg(
